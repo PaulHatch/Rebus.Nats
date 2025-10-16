@@ -1,10 +1,10 @@
 # Rebus NATS
 
-This is a port of the Rebus.Redis library to use NATS, supporting Saga persistence, outbox, and async messaging, as well as a new transport implementation which was not present in the original Rebus.Redis implementation.
+This is a port of the [Rebus.Redis](https://github.com/PaulHatch/Rebus.Redis) library to use NATS, supporting Saga persistence, outbox, and async messaging, as well as a new transport implementation which was not present in the original Rebus.Redis implementation.
 
 As with the original, this driver is designed to implement scatter/gather commands, where we want to send a single logical command to multiple services in parallel, then return data from one or more of those services to the caller.
 
-There is [an existing async library for Rebus](https://github.com/rebus-org/Rebus.Async) which uses the normal Rebus transport to send a reply, however it is marked experimental and the reasoning given for this is quite a reasonable one that [durable messages are not suitable for the ephemeral state of an async request](https://github.com/rebus-org/Rebus.Async/issues/19#issuecomment-1243273692). A pending async await is by nature ephemeral, using a persistent queue to send a reply is undesirable. In place of using the normal Rebus transport, this library uses NATS publish/subscribe to send the reply, only currently subscribed listeners will receive the reply making it well suited for our purposes.
+There is [an existing async library for Rebus](https://github.com/rebus-org/Rebus.Async) which uses the normal Rebus transport to send a reply, however it is marked experimental and the reasoning given for this is quite a reasonable one that [durable messages are not suitable for the ephemeral state of an async request](https://github.com/rebus-org/Rebus.Async/issues/19#issuecomment-1243273692). A pending async await is by nature ephemeral, using a persistent queue to send a reply is undesirable. In place of using the normal Rebus transport, this library uses NATS publish/subscribe to send the reply, only currently subscribed listeners will receive the reply making it well suited for this use case.
 
 Using async you can make a call like this on the client:
 
@@ -18,7 +18,7 @@ This will send the message to the server as normal, as well as add a task to the
 await bus.ReplyAsync(replyMessage);
 ```
 
-There are also some additional methods to allow flexibility in cases like sagas where the handler is not ready to reply until some further action is taken. Calling `GetReplyContext` in the context of a NATS async request will return a context to allow you to send a reply at some later date. This context is just an identifier, it is safe to store and can be added to a saga state, allowing a future message to reply to the original request.
+There are some additional methods to allow flexibility in cases like sagas where the handler is not ready to reply until some further action is taken. Calling `GetReplyContext` in the context of a NATS async request will return a context to allow you to send a reply at some later date. This context is just an identifier, it is safe to store and can be added to a saga state, allowing a future message to reply to the original request.
 
 ```csharp
 var replyContext = messageContext.GetReplyContext();
@@ -60,7 +60,7 @@ Configure.With(activationHandler)
     // ...
 ```
 
-Typically only one service would use NATS async messaging, e.g. a client facing service. If however you need to send replies via NATS from one service to another and if each one has it's own NATS server, you can configure the replies to be routed based on the sender address. This can be done using the `RouteRepliesTo` method on the NATS configuration:
+Typically only one service would use NATS async messaging, e.g. a client facing service. If however you need to send replies via NATS from one service to another and if each one has its own NATS server, you can configure the replies to be routed based on the sender address. This can be done using the `RouteRepliesTo` method on the NATS configuration:
 
 ```csharp
 Configure.With(activationHandler)
@@ -97,4 +97,4 @@ Configure.With(activationHandler)
 This outbox only makes sense to use when the activity being performed is also stored in NATS, e.g. for sagas that use
 NATS storage.
 
-Internally the outbox is implemented using NATS JetStream using the NATS .NET client. NATS JetStream provides durable message streaming with at-least-once delivery guarantees, making it well-suited for outbox pattern implementations. Messages are consumed using push or pull consumers depending on the configuration, with automatic acknowledgment handling to ensure reliable delivery.
+Internally the outbox is implemented using NATS JetStream using the NATS .NET client. Messages are consumed using push or pull consumers depending on the configuration, with automatic acknowledgment handling to ensure reliable delivery.
