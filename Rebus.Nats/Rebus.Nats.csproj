@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Library</OutputType>
+        <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
+        <LangVersion>12</LangVersion>
+        <Authors>Paul Hatcherian</Authors>
+        <Description>
+            Provides a NATS driver for Rebus
+        </Description>
+        <PackageDescription>Provides a NATS driver for Rebus</PackageDescription>
+        <Copyright>Copyright Paul Hatcherian 2025</Copyright>
+        <PackageTags>rebus eventbus nats</PackageTags>
+        <RepositoryUrl>https://github.com/paulhatch/Rebus.Nats</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageIcon>icon.png</PackageIcon>
+        <Nullable>enable</Nullable>
+        <NoWarn>VSTHRD100;VSTHRD200</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+            <_Parameter1>Rebus.Nats.Tests</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
+    <ItemGroup>
+<!--        Leave these commented for now-->
+<!--        <None Include="..\images\icon.png" Pack="true" PackagePath="\"/>-->
+<!--        <None Include="..\README.md" Pack="true" PackagePath="\"/>-->
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Rebus" Version="8.*"/>
+        <PackageReference Include="NATS.Client.Core" Version="2.*"/>
+        <PackageReference Include="NATS.Client.JetStream" Version="2.*"/>
+        <PackageReference Include="NATS.Client.KeyValueStore" Version="2.*"/>
+    </ItemGroup>
+
+</Project>
