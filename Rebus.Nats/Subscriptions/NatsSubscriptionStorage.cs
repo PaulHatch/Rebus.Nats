@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -7,6 +8,7 @@ using Rebus.Subscriptions;
 namespace Rebus.Nats.Subscriptions;
 
 /// <summary>Stores subscriptions in NATS Key-Value stores.</summary>
+[Obsolete("This subscription storage is no longer needed. The NatsTransport now implements ISubscriptionStorage directly using native NATS pub/sub.")]
 public class NatsSubscriptionStorage : ISubscriptionStorage
 {
     private readonly NatsProvider _natsProvider;
@@ -38,7 +40,8 @@ public class NatsSubscriptionStorage : ISubscriptionStorage
         var config = new NatsKVConfig(_bucketName)
         {
             History = 1,
-            Storage = NatsKVStorageType.File
+            Storage = NatsKVStorageType.File,
+            Description = "Rebus NATS subscription storage"
         };
 
         _kvStore = await _natsProvider.KeyValue.CreateStoreAsync(config);

@@ -1,5 +1,6 @@
 using System;
 using Rebus.Config;
+using Rebus.Logging;
 using Rebus.Sagas;
 
 namespace Rebus.Nats.Sagas;
@@ -20,7 +21,8 @@ public static class SagaConfig
         configurer.Register(r =>
         {
             var provider = r.Get<NatsProvider>();
-            return new NatsSagaStorage(provider, bucketName);
+            var loggerFactory = r.Get<IRebusLoggerFactory>();
+            return new NatsSagaStorage(provider, bucketName, loggerFactory);
         });
     }
 }

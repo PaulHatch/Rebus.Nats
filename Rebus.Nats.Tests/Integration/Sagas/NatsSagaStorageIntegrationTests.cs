@@ -1,4 +1,5 @@
 using Rebus.Exceptions;
+using Rebus.Logging;
 using Rebus.Nats.Sagas;
 using Rebus.Nats.Tests.Fixtures;
 using Rebus.Sagas;
@@ -33,7 +34,8 @@ public class NatsSagaStorageIntegrationTests : IClassFixture<NatsTestFixture>
         await _natsFixture.FlushDatabaseAsync();
 
         var natsProvider = new NatsProvider(_natsFixture.Connection, _natsFixture.JetStream);
-        var storage = new NatsSagaStorage(natsProvider, "test-sagas-1");
+        var loggerFactory = new ConsoleLoggerFactory(colored: false);
+        var storage = new NatsSagaStorage(natsProvider, "test-sagas-1", loggerFactory);
 
         var sagaData = SagaTestFixture.CreateSagaData("test-correlation-123");
         var correlationProperties = new[]
@@ -56,7 +58,8 @@ public class NatsSagaStorageIntegrationTests : IClassFixture<NatsTestFixture>
         await _natsFixture.FlushDatabaseAsync();
 
         var natsProvider = new NatsProvider(_natsFixture.Connection, _natsFixture.JetStream);
-        var storage = new NatsSagaStorage(natsProvider, "test-sagas-2");
+        var loggerFactory = new ConsoleLoggerFactory(colored: false);
+        var storage = new NatsSagaStorage(natsProvider, "test-sagas-2", loggerFactory);
 
         var sagaData = SagaTestFixture.CreateSagaData("concurrent-test");
         var correlationProperties = new[]
@@ -86,7 +89,8 @@ public class NatsSagaStorageIntegrationTests : IClassFixture<NatsTestFixture>
         await _natsFixture.FlushDatabaseAsync();
 
         var natsProvider = new NatsProvider(_natsFixture.Connection, _natsFixture.JetStream);
-        var storage = new NatsSagaStorage(natsProvider, "test-sagas-3");
+        var loggerFactory = new ConsoleLoggerFactory(colored: false);
+        var storage = new NatsSagaStorage(natsProvider, "test-sagas-3", loggerFactory);
 
         var sagaData = SagaTestFixture.CreateSagaData("delete-test");
         var correlationProperties = new[]
@@ -111,7 +115,8 @@ public class NatsSagaStorageIntegrationTests : IClassFixture<NatsTestFixture>
         await _natsFixture.FlushDatabaseAsync();
 
         var natsProvider = new NatsProvider(_natsFixture.Connection, _natsFixture.JetStream);
-        var storage = new NatsSagaStorage(natsProvider, "test-sagas-4");
+        var loggerFactory = new ConsoleLoggerFactory(colored: false);
+        var storage = new NatsSagaStorage(natsProvider, "test-sagas-4", loggerFactory);
 
         var sagaData = SagaTestFixture.CreateSagaData("update-test");
         var correlationProperties = new[]
@@ -140,7 +145,8 @@ public class NatsSagaStorageIntegrationTests : IClassFixture<NatsTestFixture>
         await _natsFixture.FlushDatabaseAsync();
 
         var natsProvider = new NatsProvider(_natsFixture.Connection, _natsFixture.JetStream);
-        var storage = new NatsSagaStorage(natsProvider, "test-sagas-5");
+        var loggerFactory = new ConsoleLoggerFactory(colored: false);
+        var storage = new NatsSagaStorage(natsProvider, "test-sagas-5", loggerFactory);
 
         var correlationProperties = new[]
         {

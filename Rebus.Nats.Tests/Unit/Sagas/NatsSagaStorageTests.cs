@@ -2,6 +2,7 @@ using NATS.Client.Core;
 using NATS.Client.JetStream;
 using NATS.Client.KeyValueStore;
 using NSubstitute;
+using Rebus.Logging;
 using Rebus.Nats.Sagas;
 using Rebus.Nats.Tests.Fixtures;
 using Rebus.Sagas;
@@ -23,8 +24,12 @@ public class NatsSagaStorageTests
         kvContext.CreateStoreAsync(Arg.Any<NatsKVConfig>(), Arg.Any<CancellationToken>())
             .Returns(kvStore);
 
+        var loggerFactory = Substitute.For<IRebusLoggerFactory>();
+        var logger = Substitute.For<ILog>();
+        loggerFactory.GetLogger<NatsSagaStorage>().Returns(logger);
+
         var natsProvider = new NatsProvider(connection, jetStream, kvContext);
-        _storage = new NatsSagaStorage(natsProvider, "test-sagas");
+        _storage = new NatsSagaStorage(natsProvider, "test-sagas", loggerFactory);
     }
 
     private class TestCorrelationProperty : ISagaCorrelationProperty

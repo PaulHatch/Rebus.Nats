@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using NATS.Client.KeyValueStore;
 using Rebus.Exceptions;
+using Rebus.Logging;
 using Rebus.Sagas;
 
 namespace Rebus.Nats.Sagas;
@@ -23,12 +24,14 @@ internal class NatsSagaStorage : ISagaStorage
 
     private readonly NatsProvider _natsProvider;
     private readonly string _bucketName;
+    private readonly ILog _log;
     private INatsKVStore? _kvStore;
 
-    public NatsSagaStorage(NatsProvider natsProvider, string bucketName)
+    public NatsSagaStorage(NatsProvider natsProvider, string bucketName, IRebusLoggerFactory loggerFactory)
     {
         _natsProvider = natsProvider;
         _bucketName = bucketName;
+        _log = loggerFactory.GetLogger<NatsSagaStorage>();
     }
 
     private async Task<INatsKVStore> GetOrCreateKVStore()
@@ -41,7 +44,8 @@ internal class NatsSagaStorage : ISagaStorage
         var config = new NatsKVConfig(_bucketName)
         {
             History = 1,
-            Storage = NatsKVStorageType.File
+            Storage = NatsKVStorageType.File,
+            Description = "Rebus saga data store",
         };
 
         _kvStore = await _natsProvider.KeyValue.CreateStoreAsync(config);
@@ -52,6 +56,7 @@ internal class NatsSagaStorage : ISagaStorage
     {
         var store = await GetOrCreateKVStore();
 
+        // (Only) Lookups by ID are direct
         if (propertyName.Equals(nameof(ISagaData.Id), StringComparison.OrdinalIgnoreCase))
         {
             var key = GetKey(sagaDataType, propertyValue.ToString());
@@ -64,7 +69,7 @@ internal class NatsSagaStorage : ISagaStorage
                     return null!;
                 }
 
-                return (ISagaData)JsonSerializer.Deserialize(entry.Value, sagaDataType, _serializeOptions)!;
+                return (ISagaData) JsonSerializer.Deserialize(entry.Value, sagaDataType, _serializeOptions)!;
             }
             catch (NatsKVKeyNotFoundException)
             {
@@ -82,22 +87,63 @@ internal class NatsSagaStorage : ISagaStorage
             return null!;
         }
 
+
+        // Otherwise we need to use a correlation index to find the saga ID
+
         var indexKey = GetIndexKey(sagaDataType, propertyName, propertyValueString);
 
         try
         {
+            // look up the saga ID from the index
             var indexEntry = await store.GetEntryAsync<string>(indexKey);
             if (string.IsNullOrEmpty(indexEntry.Value))
             {
                 return null!;
             }
 
+            // Delete invalid index entries (unexpected, but if it happens there's no sense in keeping them around)
             if (!Guid.TryParse(indexEntry.Value, out var sagaId))
             {
+                _log.Warn("Found index {IndexKey} with invalid saga ID value '{Value}', cleaning up orphaned index",
+                    indexKey, indexEntry.Value);
+                await store.DeleteAsync(indexKey);
                 return null!;
             }
 
-            return await Find(sagaDataType, nameof(ISagaData.Id), sagaId);
+            // now we've got the saga ID, look up the actual saga data
+            var sagaKey = GetKey(sagaDataType, sagaId);
+
+            try
+            {
+                var sagaEntry = await store.GetEntryAsync<string>(sagaKey);
+                if (string.IsNullOrEmpty(sagaEntry.Value))
+                {
+                    // this also shouldn't happen, but if we have found an index that points to a missing saga, we might as well clean it up
+                    // since the saga obviously doesn't contain any reference to this index anymore
+                    _log.Warn("Found saga key {SagaKey} with empty value, cleaning up orphaned index {IndexKey}",
+                        sagaKey, indexKey);
+                    await store.DeleteAsync(indexKey);
+                    return null!;
+                }
+
+                return (ISagaData) JsonSerializer.Deserialize(sagaEntry.Value, sagaDataType, _serializeOptions)!;
+            }
+            catch (NatsKVKeyNotFoundException)
+            {
+                // crash recovery scenario: index exists but saga data is missing
+                _log.Warn("Saga {SagaKey} referenced by index {IndexKey} not found, cleaning up orphaned index",
+                    sagaKey, indexKey);
+                await store.DeleteAsync(indexKey);
+                return null!;
+            }
+            catch (NatsKVKeyDeletedException)
+            {
+                // crash recovery scenario: index exists but saga data was deleted
+                _log.Warn("Saga {SagaKey} referenced by index {IndexKey} was deleted, cleaning up orphaned index",
+                    sagaKey, indexKey);
+                await store.DeleteAsync(indexKey);
+                return null!;
+            }
         }
         catch (NatsKVKeyNotFoundException)
         {
@@ -124,14 +170,13 @@ internal class NatsSagaStorage : ISagaStorage
 
         var store = await GetOrCreateKVStore();
 
-        await CreateIndexEntries(data, correlationProperties);
-
         data.Revision++;
         var key = GetKey(data);
         var value = JsonSerializer.Serialize(data, data.GetType(), _serializeOptions);
 
         try
         {
+            await CreateIndexEntries(data, correlationProperties);
             await store.PutAsync(key, value);
         }
         catch (Exception ex)
@@ -158,7 +203,7 @@ internal class NatsSagaStorage : ISagaStorage
             var oldEntry = await store.GetEntryAsync<string>(key);
             if (!string.IsNullOrEmpty(oldEntry.Value))
             {
-                oldData = (ISagaData)JsonSerializer.Deserialize(oldEntry.Value, data.GetType(), _serializeOptions)!;
+                oldData = (ISagaData) JsonSerializer.Deserialize(oldEntry.Value, data.GetType(), _serializeOptions)!;
                 natsRevision = oldEntry.Revision;
 
                 if (oldData.Revision != data.Revision)
@@ -185,10 +230,18 @@ internal class NatsSagaStorage : ISagaStorage
 
         if (oldData != null)
         {
-            await DeleteIndexEntries(oldData, correlationProperties);
-        }
+            foreach (var prop in correlationProperties)
+            {
+                var oldValue = FastPropertyAccessor.GetValue(oldData, prop.PropertyName);
+                var newValue = FastPropertyAccessor.GetValue(data, prop.PropertyName);
 
-        await CreateIndexEntries(data, correlationProperties);
+                if (!Equals(oldValue, newValue))
+                {
+                    throw new InvalidOperationException(
+                        $"Correlation property '{prop.PropertyName}' cannot be changed. Attempted to change from '{oldValue}' to '{newValue}' on saga {data.GetType().Name} with ID {data.Id}");
+                }
+            }
+        }
 
         data.Revision++;
         var value = JsonSerializer.Serialize(data, data.GetType(), _serializeOptions);
@@ -199,11 +252,6 @@ internal class NatsSagaStorage : ISagaStorage
         }
         catch (NatsKVWrongLastRevisionException ex)
         {
-            if (oldData != null)
-            {
-                await CreateIndexEntries(oldData, correlationProperties);
-            }
-            await DeleteIndexEntries(data, correlationProperties);
             throw new ConcurrencyException(ex,
                 $"Update failed for saga data for {data.GetType().Name} with ID {data.Id} due to revision mismatch, another update has been made to this data since it was loaded for the current operation.");
         }
@@ -214,7 +262,7 @@ internal class NatsSagaStorage : ISagaStorage
         var key = GetKey(sagaData);
         var store = await GetOrCreateKVStore();
 
-        ISagaData? dataToDelete = sagaData;
+        var dataToDelete = sagaData;
 
         if (dataToDelete.Revision == 0)
         {
@@ -223,7 +271,8 @@ internal class NatsSagaStorage : ISagaStorage
                 var entry = await store.GetEntryAsync<string>(key);
                 if (!string.IsNullOrEmpty(entry.Value))
                 {
-                    dataToDelete = (ISagaData)JsonSerializer.Deserialize(entry.Value, sagaData.GetType(), _serializeOptions)!;
+                    dataToDelete =
+                        (ISagaData) JsonSerializer.Deserialize(entry.Value, sagaData.GetType(), _serializeOptions)!;
                 }
             }
             catch (NatsKVKeyNotFoundException)
@@ -293,7 +342,7 @@ internal class NatsSagaStorage : ISagaStorage
         }
 
         var sanitized = new char[value.Length];
-        for (int i = 0; i < value.Length; i++)
+        for (var i = 0; i < value.Length; i++)
         {
             var c = value[i];
             sanitized[i] = char.IsLetterOrDigit(c) || c == '-' || c == '_' ? c : '_';
@@ -302,43 +351,16 @@ internal class NatsSagaStorage : ISagaStorage
         return new string(sanitized);
     }
 
-    private static object? GetPropertyValue(object obj, string propertyName)
-    {
-        if (string.IsNullOrEmpty(propertyName))
-        {
-            throw new ArgumentException("Property name cannot be null or empty", nameof(propertyName));
-        }
 
-        var parts = propertyName.Split('.');
-        object? currentValue = obj;
-
-        foreach (var part in parts)
-        {
-            if (currentValue == null)
-            {
-                return null;
-            }
-
-            var propertyInfo = currentValue.GetType().GetProperty(part, BindingFlags.Public | BindingFlags.Instance);
-            if (propertyInfo == null)
-            {
-                throw new ArgumentException($"Property '{part}' not found on type '{currentValue.GetType().Name}'");
-            }
-
-            currentValue = propertyInfo.GetValue(currentValue);
-        }
-
-        return currentValue;
-    }
-
-    private async Task CreateIndexEntries(ISagaData sagaData, IEnumerable<ISagaCorrelationProperty> correlationProperties)
+    private async Task CreateIndexEntries(ISagaData sagaData,
+        IEnumerable<ISagaCorrelationProperty> correlationProperties)
     {
         var store = await GetOrCreateKVStore();
         var sagaDataType = sagaData.GetType();
 
         foreach (var correlationProperty in correlationProperties)
         {
-            var propertyValue = GetPropertyValue(sagaData, correlationProperty.PropertyName);
+            var propertyValue = FastPropertyAccessor.GetValue(sagaData, correlationProperty.PropertyName);
             if (propertyValue == null)
             {
                 continue;
@@ -372,14 +394,15 @@ internal class NatsSagaStorage : ISagaStorage
         }
     }
 
-    private async Task DeleteIndexEntries(ISagaData sagaData, IEnumerable<ISagaCorrelationProperty> correlationProperties)
+    private async Task DeleteIndexEntries(ISagaData sagaData,
+        IEnumerable<ISagaCorrelationProperty> correlationProperties)
     {
         var store = await GetOrCreateKVStore();
         var sagaDataType = sagaData.GetType();
 
         foreach (var correlationProperty in correlationProperties)
         {
-            var propertyValue = GetPropertyValue(sagaData, correlationProperty.PropertyName);
+            var propertyValue = FastPropertyAccessor.GetValue(sagaData, correlationProperty.PropertyName);
             if (propertyValue == null)
             {
                 continue;
