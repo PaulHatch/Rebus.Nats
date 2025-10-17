@@ -62,7 +62,8 @@ public static class AsyncClientNatsExtensions
         }
 
         var maxWaitTime = timeout ?? TimeSpan.FromSeconds(15);
-        var replySubject = $"_INBOX.{Guid.NewGuid():N}";
+        var replySubject =  _connection.NewInbox();
+        
 
         if (optionalHeaders?.TryGetValue(Headers.MessageId, out var messageID) is not true)
         {
