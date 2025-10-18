@@ -1,8 +1,8 @@
 # Rebus NATS
 
-This is a port of the [Rebus.Redis](https://github.com/PaulHatch/Rebus.Redis) library to use NATS, supporting Saga persistence, outbox, and async messaging, as well as a new transport implementation which was not present in the original Rebus.Redis implementation.
+This is a port of the [Rebus.Redis](https://github.com/PaulHatch/Rebus.Redis) library to use NATS, supporting saga persistence, outbox, and async messaging, as well as a transport implementation which was not present in the original Rebus.Redis implementation.
 
-As with the original, this driver is designed to implement scatter/gather commands, where we want to send a single logical command to multiple services in parallel, then return data from one or more of those services to the caller.
+## Async Support
 
 There is [an existing async library for Rebus](https://github.com/rebus-org/Rebus.Async) which uses the normal Rebus transport to send a reply, however it is marked experimental and the reasoning given for this is quite a reasonable one that [durable messages are not suitable for the ephemeral state of an async request](https://github.com/rebus-org/Rebus.Async/issues/19#issuecomment-1243273692). A pending async await is by nature ephemeral, using a persistent queue to send a reply is undesirable. In place of using the normal Rebus transport, this library uses NATS publish/subscribe to send the reply, only currently subscribed listeners will receive the reply making it well suited for this use case.
 
@@ -75,9 +75,11 @@ Configure.With(activationHandler)
 
 Note that this impacts only the reply routing, all other NATS components will use the main NATS connection configured when calling `EnableNats`.
 
-## Saga and Subscription Storage and Outbox
+## Saga Storage and Outbox
 
-This library also provides a NATS implementation of the saga and subscription storage and an outbox implementation modeled after the Postgres implementation in Rebus. The outbox is implemented using NATS JetStream, saga data is stored using NATS key-value stores, and subscriptions using NATS streams.
+This library also provides a NATS implementation of the saga storage and an outbox implementation modeled after the Postgres implementation in Rebus. The outbox is implemented using NATS JetStream, and saga data is stored using NATS key-value stores.
+
+Subscriptions (pub/sub) are handled natively by the NATS transport using JetStream subjects and consumers, so no separate subscription storage configuration is needed.
 
 Basic configuration for the saga storage and outbox is as follows:
 
@@ -89,9 +91,9 @@ Configure.With(activationHandler)
         o.SetBusName("main");
         o.EnableNats("nats://localhost:4222", r => r.EnableAsync());
     })
+    .Transport(t => t.UseNatsJetStream("my-queue"))  // Subscriptions handled automatically
     .Outbox(o => o.StoreInNats())
-    .Sagas(s => s.StoreInNats())
-    .Subscriptions(s => s.StoreInNats());
+    .Sagas(s => s.StoreInNats());
 ```
 
 This outbox only makes sense to use when the activity being performed is also stored in NATS, e.g. for sagas that use
