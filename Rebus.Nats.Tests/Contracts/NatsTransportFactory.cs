@@ -26,8 +26,7 @@ public class NatsTransportFactory : ITransportFactory, IDisposable
         var options = new NatsTransportOptions
         {
             StreamName = $"rebus-transport-{TestConfig.Suffix}",
-            SubjectPrefix = "rebus.queue",
-            TopicSubjectPrefix = "rebus.topic"
+            SubjectPrefix = "rebus"
         };
 
         var natsProvider = new NatsProvider(_fixture.Connection, _fixture.JetStream);
@@ -46,8 +45,7 @@ public class NatsTransportFactory : ITransportFactory, IDisposable
         var options = new NatsTransportOptions
         {
             StreamName = $"rebus-transport-{TestConfig.Suffix}",
-            SubjectPrefix = "rebus.queue",
-            TopicSubjectPrefix = "rebus.topic"
+            SubjectPrefix = "rebus"
         };
 
         var natsProvider = new NatsProvider(_fixture.Connection, _fixture.JetStream);

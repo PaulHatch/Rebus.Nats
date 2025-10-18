@@ -1,6 +1,7 @@
 using System;
 using Rebus.Config;
 using Rebus.Logging;
+using Rebus.Subscriptions;
 using Rebus.Transport;
 
 namespace Rebus.Nats.Transport;
@@ -26,6 +27,9 @@ public static class TransportConfigurationExtensions
     /// the NATS connection. The transport will use the shared NatsProvider from the dependency injection
     /// container.
     ///
+    /// The NATS transport has native support for pub/sub messaging, so it will automatically be registered
+    /// as the subscription storage implementation.
+    ///
     /// Example usage:
     /// <code>
     /// Configure.With(activator)
@@ -49,6 +53,8 @@ public static class TransportConfigurationExtensions
             throw new ArgumentNullException(nameof(configurer));
         }
 
+        const string natsSubText = "The NATS transport was inserted as the subscriptions storage because it has native support for pub/sub messaging";
+
         configurer.Register(context =>
         {
             var natsProvider = context.Get<NatsProvider>();
@@ -65,6 +71,10 @@ public static class TransportConfigurationExtensions
 
             return transport;
         });
+
+        configurer
+            .OtherService<ISubscriptionStorage>()
+            .Register(c => (ISubscriptionStorage)c.Get<ITransport>(), description: natsSubText);
     }
 
     /// <summary>

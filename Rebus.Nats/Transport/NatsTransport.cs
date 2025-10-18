@@ -10,6 +10,7 @@ using Rebus.Bus;
 using Rebus.Logging;
 using Rebus.Messages;
 using Rebus.Nats.Outbox;
+using Rebus.Subscriptions;
 using Rebus.Transport;
 
 namespace Rebus.Nats.Transport;
@@ -18,7 +19,7 @@ namespace Rebus.Nats.Transport;
 /// NATS JetStream transport implementation for Rebus, providing durable message delivery using NATS JetStream
 /// streams and consumers with support for acknowledgment, retries, and message expiration.
 /// </summary>
-public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
+public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable, ISubscriptionStorage
 {
     private static readonly RetryUtility _sendRetryUtility = new([
         TimeSpan.FromMilliseconds(100),
@@ -35,6 +36,9 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
     private INatsJSConsumer? _consumer;
     private readonly SemaphoreSlim _initializationLock = new(1, 1);
     private bool _initialized;
+
+    private readonly Dictionary<string, HashSet<string>> _topicSubscribers = new();
+    private readonly SemaphoreSlim _subscriptionLock = new(1, 1);
 
     /// <summary>Creates a new instance of the <see cref="NatsTransport"/> class.</summary>
     /// <param name="natsProvider">The NATS provider for connection management.</param>
@@ -75,7 +79,7 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
             // Create the main transport stream
             var streamConfig = new StreamConfig(
                 name: _options.StreamName,
-                subjects: [$"{_options.SubjectPrefix}.>", $"{_options.TopicSubjectPrefix}.>"])
+                subjects: [$"{_options.SubjectPrefix}.>"])
             {
                 Storage = _options.Storage,
                 MaxAge = _options.MaxAge,
@@ -206,23 +210,17 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
                     continue;
                 }
 
-                // Add delivery count from JetStream metadata
-                // Note: NATS JetStream tracks delivery attempts automatically
-                // We'll extract this from metadata when available
-                // For now, we omit delivery count - it can be added later when we verify the API
-                // TODO: Add delivery count tracking once NATS client API is verified
-
                 // Register acknowledgment callbacks
                 context.OnAck(async _ =>
                 {
-                    await msg.AckAsync(cancellationToken: cancellationToken);
+                    await msg.AckAsync();
                     var messageId = headers.TryGetValue(Headers.MessageId, out var id) ? id : "unknown";
                     _log.Debug("Message acknowledged: {MessageId}", messageId);
                 });
 
                 context.OnNack(async _ =>
                 {
-                    await msg.NakAsync(cancellationToken: cancellationToken);
+                    await msg.NakAsync();
                     var messageId = headers.TryGetValue(Headers.MessageId, out var id) ? id : "unknown";
                     _log.Debug("Message negatively acknowledged for redelivery: {MessageId}", messageId);
                 });
@@ -315,15 +313,9 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
         }
     }
 
-    /// <summary>Gets the NATS subject for a given address.</summary>
+    /// <summary>Gets the NATS subject for a given queue address.</summary>
     private string GetSubjectForAddress(string address)
     {
-        // Check if this looks like a topic (contains dots or wildcards)
-        if (address.Contains(".") || address.Contains("*") || address.Contains(">"))
-        {
-            return $"{_options.TopicSubjectPrefix}.{address}";
-        }
-
         return $"{_options.SubjectPrefix}.{address}";
     }
 
@@ -399,5 +391,100 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
     public void Dispose()
     {
         _initializationLock.Dispose();
+        _subscriptionLock.Dispose();
     }
+
+    /// <summary>Gets whether this transport is centralized (it always is, as NATS JetStream handles pub/sub routing).</summary>
+    public bool IsCentralized => true;
+
+    /// <summary>
+    /// Gets all subscriber addresses for a given topic. Returns the actual queue addresses of
+    /// subscribers so Rebus can send messages to each one individually.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetSubscriberAddresses(string topic)
+    {
+        await _subscriptionLock.WaitAsync();
+        try
+        {
+            return _topicSubscribers.TryGetValue(topic, out var subscribers) ? new List<string>(subscribers) : [];
+        }
+        finally
+        {
+            _subscriptionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Registers a queue address as a subscriber to a topic. The subscriber will receive messages
+    /// when they are published to this topic.
+    /// </summary>
+    public async Task RegisterSubscriber(string topic, string subscriberAddress)
+    {
+        var subscription = ParseSubscription(topic, subscriberAddress);
+
+        _log.Info("Registering subscriber {QueueName} for topic {Topic}", subscription.QueueName, subscription.Topic);
+
+        await _subscriptionLock.WaitAsync();
+        try
+        {
+            if (!_topicSubscribers.TryGetValue(subscription.Topic, out var subscribers))
+            {
+                subscribers = [];
+                _topicSubscribers[subscription.Topic] = subscribers;
+            }
+            subscribers.Add(subscriberAddress);
+        }
+        finally
+        {
+            _subscriptionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Unregisters a queue address from a topic subscription.
+    /// </summary>
+    public async Task UnregisterSubscriber(string topic, string subscriberAddress)
+    {
+        var subscription = ParseSubscription(topic, subscriberAddress);
+
+        _log.Info("Unregistering subscriber {QueueName} from topic {Topic}", subscription.QueueName, subscription.Topic);
+
+        await _subscriptionLock.WaitAsync();
+        try
+        {
+            if (_topicSubscribers.TryGetValue(subscription.Topic, out var subscribers))
+            {
+                subscribers.Remove(subscriberAddress);
+                if (subscribers.Count == 0)
+                {
+                    _topicSubscribers.Remove(subscription.Topic);
+                }
+            }
+        }
+        finally
+        {
+            _subscriptionLock.Release();
+        }
+    }
+
+    private Subscription ParseSubscription(string topicPossiblyQualified, string queueName)
+    {
+        if (topicPossiblyQualified.Contains("@"))
+        {
+            var parts = topicPossiblyQualified.Split('@');
+
+            if (parts.Length != 2)
+            {
+                throw new FormatException(
+                    $"Could not parse the topic '{topicPossiblyQualified}' into a subject-qualified topic - expected the format <topic>@<subject-prefix>");
+            }
+
+            return new Subscription(parts[1], parts[0], queueName);
+        }
+
+        return new Subscription(_options.SubjectPrefix, topicPossiblyQualified, queueName);
+    }
+
+    /// <summary>Represents a subscription of a queue address to a topic.</summary>
+    private record Subscription(string SubjectPrefix, string Topic, string QueueName);
 }

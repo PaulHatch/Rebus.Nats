@@ -33,11 +33,8 @@ public class NatsTransportOptions
     /// <summary>Gets or sets the retention policy for the stream. Default is WorkQueue.</summary>
     public StreamConfigRetention Retention { get; set; } = StreamConfigRetention.Workqueue;
 
-    /// <summary>Gets or sets the subject prefix for transport messages. Default is "rebus.queue".</summary>
-    public string SubjectPrefix { get; set; } = "rebus.queue";
-
-    /// <summary>Gets or sets the subject prefix for topic messages. Default is "rebus.topic".</summary>
-    public string TopicSubjectPrefix { get; set; } = "rebus.topic";
+    /// <summary>Gets or sets the subject prefix for all messages. Default is "rebus".</summary>
+    public string SubjectPrefix { get; set; } = "rebus";
 
     /// <summary>Gets or sets the maximum number of messages to fetch in a single pull operation. Default is 100.</summary>
     public int FetchBatchSize { get; set; } = 100;
