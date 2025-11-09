@@ -1,10 +1,12 @@
 using System;
-using Rebus.Config;
 using Rebus.Logging;
+using Rebus.Nats;
+using Rebus.Nats.Transport;
 using Rebus.Subscriptions;
 using Rebus.Transport;
 
-namespace Rebus.Nats.Transport;
+// ReSharper disable once CheckNamespace
+namespace Rebus.Config;
 
 /// <summary>Configuration extensions for the NATS JetStream transport.</summary>
 public static class TransportConfigurationExtensions

@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using Rebus.Config;
 using Rebus.Messages;
 using Rebus.Pipeline;
 

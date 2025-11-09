@@ -4,9 +4,11 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using NATS.Client.Core;
 using Rebus.Messages;
+using Rebus.Nats.Async;
 using Rebus.Pipeline;
 
-namespace Rebus.Nats.Async;
+// ReSharper disable once CheckNamespace
+namespace Rebus.Config;
 
 /// <summary>Extension methods for host-side async request-reply support using NATS.</summary>
 public static class AsyncHostNatsExtensions

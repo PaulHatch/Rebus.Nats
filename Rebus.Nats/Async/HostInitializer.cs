@@ -1,5 +1,6 @@
 using NATS.Client.Core;
 using Rebus.Bus;
+using Rebus.Config;
 
 namespace Rebus.Nats.Async;
 

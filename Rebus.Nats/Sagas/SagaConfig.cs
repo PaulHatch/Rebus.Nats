@@ -1,9 +1,11 @@
 using System;
-using Rebus.Config;
 using Rebus.Logging;
+using Rebus.Nats;
+using Rebus.Nats.Sagas;
 using Rebus.Sagas;
 
-namespace Rebus.Nats.Sagas;
+// ReSharper disable once CheckNamespace
+namespace Rebus.Config;
 
 /// <summary>Configuration extensions for storing saga data in NATS Key-Value stores.</summary>
 public static class SagaConfig
