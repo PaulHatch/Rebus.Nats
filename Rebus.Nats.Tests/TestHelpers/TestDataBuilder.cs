@@ -1,6 +1,5 @@
 using System.Text;
 using Rebus.Messages;
-using Rebus.Nats.Tests.Fixtures;
 
 namespace Rebus.Nats.Tests.TestHelpers;
 
@@ -31,24 +30,6 @@ public class TestDataBuilder
         return new TransportMessage(
             headers,
             body ?? Encoding.UTF8.GetBytes("{}"));
-    }
-
-    public static TestSagaData CreateSagaDataWithState(
-        string correlationId,
-        int processingCount = 0,
-        bool isCompleted = false,
-        List<string>? items = null)
-    {
-        var sagaData = SagaTestFixture.CreateSagaData(correlationId);
-        sagaData.ProcessingCount = processingCount;
-        sagaData.IsCompleted = isCompleted;
-
-        if (items != null)
-        {
-            sagaData.Items = items;
-        }
-
-        return sagaData;
     }
 
     public static List<TransportMessage> CreateBatchOfMessages(int count, string prefix = "msg")

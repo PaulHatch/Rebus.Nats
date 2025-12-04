@@ -1,8 +1,6 @@
 using NATS.Client.Core;
 using NATS.Client.JetStream;
 using NATS.Client.KeyValueStore;
-using Rebus.Pipeline;
-using Rebus.Transport;
 
 namespace Rebus.Nats;
 
@@ -12,7 +10,6 @@ namespace Rebus.Nats;
 /// </summary>
 public class NatsProvider
 {
-    internal const string CurrentOutboxConnectionKey = "nats-outbox-context";
     private readonly INatsConnection _connection;
     private readonly INatsJSContext _jetStream;
     private readonly INatsKVContext _keyValue;
@@ -55,24 +52,4 @@ public class NatsProvider
         return new NatsTransactionContext(_jetStream);
     }
 
-    /// <summary>
-    /// Gets an existing <see cref="NatsTransactionContext" /> from the current Rebus transaction scope if one exists,
-    /// or creates a new non-transactional <see cref="NatsTransactionContext" /> if one does not exist.
-    /// </summary>
-    /// <param name="context">
-    /// The Rebus <see cref="ITransactionContext" /> to check for a transaction. If none is provided, the current
-    /// "MessageContext.Current.TransactionContext" is used.
-    /// </param>
-    public NatsTransactionContext GetForScope(ITransactionContext? context = null)
-    {
-        var currentContext = context ?? MessageContext.Current?.TransactionContext;
-
-        if (currentContext?.Items.TryGetValue(CurrentOutboxConnectionKey, out var result) == true &&
-            result is NatsTransactionContext natsContext)
-        {
-            return natsContext;
-        }
-
-        return GetWithoutTransaction();
-    }
 }

@@ -9,7 +9,6 @@ using NATS.Client.JetStream.Models;
 using Rebus.Bus;
 using Rebus.Logging;
 using Rebus.Messages;
-using Rebus.Nats.Outbox;
 using Rebus.Subscriptions;
 using Rebus.Transport;
 
@@ -21,12 +20,6 @@ namespace Rebus.Nats.Transport;
 /// </summary>
 public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable, ISubscriptionStorage
 {
-    private static readonly RetryUtility _sendRetryUtility = new([
-        TimeSpan.FromMilliseconds(100),
-        TimeSpan.FromMilliseconds(200),
-        TimeSpan.FromMilliseconds(500)
-    ]);
-
     private readonly NatsProvider _natsProvider;
     private readonly NatsTransportOptions _options;
     private readonly ILog _log;
@@ -250,18 +243,6 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
         IEnumerable<OutgoingTransportMessage> outgoingMessages,
         ITransactionContext context)
     {
-        // Check if outbox is active for this transaction
-        var natsTransaction = context.GetOrNull<NatsTransactionContext>(NatsProvider.CurrentOutboxConnectionKey);
-
-        if (natsTransaction != null)
-        {
-            // Outbox is active - messages are already queued by OutboxClientTransportDecorator
-            // The outbox will forward them later, so we skip sending here
-            _log.Debug("Outbox active, messages will be forwarded by outbox");
-            return;
-        }
-
-        // Normal send path - no outbox active
         foreach (var outgoingMessage in outgoingMessages)
         {
             try
@@ -293,14 +274,10 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
                     natsHeaders.Add("Nats-Msg-Id", messageId);
                 }
 
-                // Publish the message with retry logic for transient failures
-                await _sendRetryUtility.ExecuteAsync(async () =>
-                {
-                    await _natsProvider.JetStream.PublishAsync(
-                        subject: subject,
-                        data: transportMessage.Body,
-                        headers: natsHeaders);
-                });
+                await _natsProvider.JetStream.PublishAsync(
+                    subject: subject,
+                    data: transportMessage.Body,
+                    headers: natsHeaders);
 
                 _log.Debug("Published message to subject: {Subject}, MessageId: {MessageId}",
                     subject, messageId ?? "none");
