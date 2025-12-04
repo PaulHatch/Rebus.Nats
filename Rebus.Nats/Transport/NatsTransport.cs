@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NATS.Client.Core;
@@ -20,6 +21,10 @@ namespace Rebus.Nats.Transport;
 /// </summary>
 public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable, ISubscriptionStorage
 {
+    private const string QueueSubjectsegment = "queue";
+    private const string TopicSubjectSegment = "topic";
+    private const string TopicDestinationPrefix = "topic:";
+
     private readonly NatsProvider _natsProvider;
     private readonly NatsTransportOptions _options;
     private readonly ILog _log;
@@ -29,9 +34,6 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
     private INatsJSConsumer? _consumer;
     private readonly SemaphoreSlim _initializationLock = new(1, 1);
     private bool _initialized;
-
-    private readonly Dictionary<string, HashSet<string>> _topicSubscribers = new();
-    private readonly SemaphoreSlim _subscriptionLock = new(1, 1);
 
     /// <summary>Creates a new instance of the <see cref="NatsTransport"/> class.</summary>
     /// <param name="natsProvider">The NATS provider for connection management.</param>
@@ -69,10 +71,9 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
 
             _log.Info("Initializing NATS transport with stream: {StreamName}", _options.StreamName);
 
-            // Create the main transport stream
             var streamConfig = new StreamConfig(
                 name: _options.StreamName,
-                subjects: [$"{_options.SubjectPrefix}.>"])
+                subjects: [$"{_options.SubjectPrefix}.{QueueSubjectsegment}.>", $"{_options.SubjectPrefix}.{TopicSubjectSegment}.>"])
             {
                 Storage = _options.Storage,
                 MaxAge = _options.MaxAge,
@@ -114,7 +115,7 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
         }
     }
 
-    /// <summary>Creates a queue (consumer) for the specified address.</summary>
+    /// <summary>Creates or updates a queue (consumer) for the specified address.</summary>
     /// <param name="address">The queue address/name.</param>
     public override void CreateQueue(string address)
     {
@@ -123,43 +124,46 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
             throw new ArgumentException("Address cannot be null or whitespace", nameof(address));
         }
 
-        try
+        var existingTopics = GetCurrentTopicSubscriptionsAsync(address).ConfigureAwait(false).GetAwaiter().GetResult();
+        CreateOrUpdateConsumerAsync(address, existingTopics).ConfigureAwait(false).GetAwaiter().GetResult();
+    }
+
+    private async Task<INatsJSConsumer> CreateOrUpdateConsumerAsync(string address, IReadOnlyList<string> topicSubjects)
+    {
+        _log.Info("Creating/updating consumer for address: {Address} with {TopicCount} topic subscriptions", address, topicSubjects.Count);
+
+        var consumerName = GetConsumerNameForQueue(address);
+        var queueSubject = GetSubjectForQueue(address);
+
+        var allSubjects = new List<string> { queueSubject };
+        allSubjects.AddRange(topicSubjects);
+
+        var consumerConfig = new ConsumerConfig(consumerName)
         {
-            _log.Info("Creating queue (consumer) for address: {Address}", address);
+            AckPolicy = _options.AckPolicy,
+            AckWait = _options.AckWait,
+            MaxDeliver = _options.MaxDeliver,
+            DeliverPolicy = ConsumerConfigDeliverPolicy.All,
+            FilterSubjects = allSubjects
+        };
 
-            var consumerName = GetConsumerName(address);
-            var filterSubject = GetSubjectForAddress(address);
-
-            var consumerConfig = new ConsumerConfig(consumerName)
-            {
-                AckPolicy = _options.AckPolicy,
-                AckWait = _options.AckWait,
-                MaxDeliver = _options.MaxDeliver,
-                FilterSubject = filterSubject,
-                DeliverPolicy = ConsumerConfigDeliverPolicy.All
-            };
-
-            if (_stream == null)
-            {
-                throw new InvalidOperationException("Stream not initialized. Call Initialize() first.");
-            }
-
-            var consumer = _stream.CreateOrUpdateConsumerAsync(consumerConfig)
-                .ConfigureAwait(false).GetAwaiter().GetResult();
-
-            // If this is our input queue, save the consumer reference
-            if (address == _inputQueueName)
-            {
-                _consumer = consumer;
-            }
-
-            _log.Info("Created/updated consumer: {ConsumerName} for subject: {Subject}", consumerName, filterSubject);
-        }
-        catch (Exception ex)
+        if (_stream == null)
         {
-            _log.Error(ex, "Failed to create queue for address: {Address}", address);
-            throw;
+            throw new InvalidOperationException("Stream not initialized. Call Initialize() first.");
         }
+
+        var consumer = await _stream.CreateOrUpdateConsumerAsync(consumerConfig);
+
+        // If this is our input queue, save the consumer reference
+        if (address == _inputQueueName)
+        {
+            _consumer = consumer;
+        }
+
+        _log.Info("Created/updated consumer: {ConsumerName} with subjects: [{Subjects}]",
+            consumerName, string.Join(", ", allSubjects));
+
+        return consumer;
     }
 
     /// <summary>Receives the next available message from the input queue.</summary>
@@ -250,25 +254,20 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
                 var destinationAddress = outgoingMessage.DestinationAddress;
                 var transportMessage = outgoingMessage.TransportMessage;
 
-                // Determine subject based on destination
-                var subject = GetSubjectForAddress(destinationAddress);
+                var subject = destinationAddress.StartsWith(TopicDestinationPrefix, StringComparison.Ordinal)
+                    ? GetSubjectForTopic(destinationAddress[TopicDestinationPrefix.Length..])
+                    : GetSubjectForQueue(destinationAddress);
 
-                // Convert headers to NATS headers
                 var natsHeaders = CreateNatsHeaders(transportMessage.Headers);
 
-                // Check for message expiration
                 if (transportMessage.Headers.TryGetValue(Headers.TimeToBeReceived, out var ttlString))
                 {
-                    // Parse the time-to-be-received header
                     if (TimeSpan.TryParse(ttlString, out var ttl))
                     {
-                        // Note: NATS doesn't support per-message TTL directly
-                        // We can use the Nats-Ttl header which some implementations respect
                         natsHeaders.Add("Nats-Ttl", ttl.TotalSeconds.ToString(CultureInfo.InvariantCulture));
                     }
                 }
 
-                // Add message ID for deduplication if available
                 if (transportMessage.Headers.TryGetValue(Headers.MessageId, out var messageId))
                 {
                     natsHeaders.Add("Nats-Msg-Id", messageId);
@@ -290,18 +289,15 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
         }
     }
 
-    /// <summary>Gets the NATS subject for a given queue address.</summary>
-    private string GetSubjectForAddress(string address)
-    {
-        return $"{_options.SubjectPrefix}.{address}";
-    }
+    private string GetSubjectForQueue(string address) => $"{_options.SubjectPrefix}.{QueueSubjectsegment}.{address}";
 
-    /// <summary>Gets the consumer name for a given queue address.</summary>
-    private string GetConsumerName(string address)
-    {
-        // Sanitize the address to create a valid consumer name
-        return $"rebus-{address.Replace(".", "-").Replace("*", "").Replace(">", "")}";
-    }
+    private string GetSubjectForTopic(string topic) => $"{_options.SubjectPrefix}.{TopicSubjectSegment}.{SanitizeForSubject(topic)}";
+
+    private string GetConsumerNameForQueue(string address) => $"rebus-queue-{SanitizeForConsumerName(address)}";
+
+    private static string SanitizeForConsumerName(string value) => value.Replace(".", "-").Replace("*", "").Replace(">", "");
+
+    private static string SanitizeForSubject(string value) => value.Replace(".", "-").Replace(" ", "-");
 
     /// <summary>Creates NATS headers from Rebus headers.</summary>
     private NatsHeaders CreateNatsHeaders(Dictionary<string, string> rebusHeaders)
@@ -368,100 +364,82 @@ public class NatsTransport : AbstractRebusTransport, IInitializable, IDisposable
     public void Dispose()
     {
         _initializationLock.Dispose();
-        _subscriptionLock.Dispose();
     }
 
     /// <summary>Gets whether this transport is centralized (it always is, as NATS JetStream handles pub/sub routing).</summary>
     public bool IsCentralized => true;
 
-    /// <summary>
-    /// Gets all subscriber addresses for a given topic. Returns the actual queue addresses of
-    /// subscribers so Rebus can send messages to each one individually.
-    /// </summary>
-    public async Task<IReadOnlyList<string>> GetSubscriberAddresses(string topic)
+    /// <summary>Gets the destination address for publishing to a topic.</summary>
+    public Task<IReadOnlyList<string>> GetSubscriberAddresses(string topic)
     {
-        await _subscriptionLock.WaitAsync();
-        try
-        {
-            return _topicSubscribers.TryGetValue(topic, out var subscribers) ? new List<string>(subscribers) : [];
-        }
-        finally
-        {
-            _subscriptionLock.Release();
-        }
+        var topicAddress = $"{TopicDestinationPrefix}{topic}";
+        return Task.FromResult<IReadOnlyList<string>>([topicAddress]);
     }
 
-    /// <summary>
-    /// Registers a queue address as a subscriber to a topic. The subscriber will receive messages
-    /// when they are published to this topic.
-    /// </summary>
+    /// <summary>Registers a subscriber to a topic.</summary>
     public async Task RegisterSubscriber(string topic, string subscriberAddress)
     {
-        var subscription = ParseSubscription(topic, subscriberAddress);
-
-        _log.Info("Registering subscriber {QueueName} for topic {Topic}", subscription.QueueName, subscription.Topic);
-
-        await _subscriptionLock.WaitAsync();
-        try
+        if (_stream == null)
         {
-            if (!_topicSubscribers.TryGetValue(subscription.Topic, out var subscribers))
-            {
-                subscribers = [];
-                _topicSubscribers[subscription.Topic] = subscribers;
-            }
-            subscribers.Add(subscriberAddress);
+            throw new InvalidOperationException("Stream not initialized. Call Initialize() first.");
         }
-        finally
+
+        _log.Info("Registering subscriber {QueueName} for topic {Topic}", subscriberAddress, topic);
+
+        var topicSubject = GetSubjectForTopic(topic);
+        var currentTopics = await GetCurrentTopicSubscriptionsAsync(subscriberAddress);
+
+        if (!currentTopics.Contains(topicSubject))
         {
-            _subscriptionLock.Release();
+            currentTopics.Add(topicSubject);
+            await CreateOrUpdateConsumerAsync(subscriberAddress, currentTopics);
         }
     }
 
-    /// <summary>
-    /// Unregisters a queue address from a topic subscription.
-    /// </summary>
+    /// <summary>Unregisters a subscriber from a topic.</summary>
     public async Task UnregisterSubscriber(string topic, string subscriberAddress)
     {
-        var subscription = ParseSubscription(topic, subscriberAddress);
+        if (_stream == null)
+        {
+            throw new InvalidOperationException("Stream not initialized. Call Initialize() first.");
+        }
 
-        _log.Info("Unregistering subscriber {QueueName} from topic {Topic}", subscription.QueueName, subscription.Topic);
+        _log.Info("Unregistering subscriber {QueueName} from topic {Topic}", subscriberAddress, topic);
 
-        await _subscriptionLock.WaitAsync();
+        var topicSubject = GetSubjectForTopic(topic);
+        var currentTopics = await GetCurrentTopicSubscriptionsAsync(subscriberAddress);
+
+        if (currentTopics.Remove(topicSubject))
+        {
+            await CreateOrUpdateConsumerAsync(subscriberAddress, currentTopics);
+        }
+    }
+
+    private async Task<List<string>> GetCurrentTopicSubscriptionsAsync(string queueAddress)
+    {
+        if (_stream == null)
+        {
+            throw new InvalidOperationException("Stream not initialized. Call Initialize() first.");
+        }
+
+        var consumerName = GetConsumerNameForQueue(queueAddress);
+        var queueSubject = GetSubjectForQueue(queueAddress);
+        var topicPrefix = $"{_options.SubjectPrefix}.{TopicSubjectSegment}.";
+
         try
         {
-            if (_topicSubscribers.TryGetValue(subscription.Topic, out var subscribers))
-            {
-                subscribers.Remove(subscriberAddress);
-                if (subscribers.Count == 0)
-                {
-                    _topicSubscribers.Remove(subscription.Topic);
-                }
-            }
+            var consumer = await _stream.GetConsumerAsync(consumerName);
+            var filterSubjects = consumer.Info.Config.FilterSubjects ?? [];
+
+            // Return only topic subjects (exclude the queue's own subject)
+            return filterSubjects
+                .Where(s => s.StartsWith(topicPrefix, StringComparison.Ordinal))
+                .ToList();
         }
-        finally
+        catch (NatsJSApiException ex) when (ex.Error.Code == 404)
         {
-            _subscriptionLock.Release();
+            // Consumer doesn't exist yet - no subscriptions
+            return [];
         }
     }
-
-    private Subscription ParseSubscription(string topicPossiblyQualified, string queueName)
-    {
-        if (topicPossiblyQualified.Contains("@"))
-        {
-            var parts = topicPossiblyQualified.Split('@');
-
-            if (parts.Length != 2)
-            {
-                throw new FormatException(
-                    $"Could not parse the topic '{topicPossiblyQualified}' into a subject-qualified topic - expected the format <topic>@<subject-prefix>");
-            }
-
-            return new Subscription(parts[1], parts[0], queueName);
-        }
-
-        return new Subscription(_options.SubjectPrefix, topicPossiblyQualified, queueName);
-    }
-
-    /// <summary>Represents a subscription of a queue address to a topic.</summary>
-    private record Subscription(string SubjectPrefix, string Topic, string QueueName);
 }

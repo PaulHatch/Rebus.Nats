@@ -30,8 +30,8 @@ public class NatsTransportOptions
     /// <summary>Gets or sets the maximum bytes for the stream. Default is -1 (unlimited).</summary>
     public long MaxBytes { get; set; } = -1;
 
-    /// <summary>Gets or sets the retention policy for the stream. Default is WorkQueue.</summary>
-    public StreamConfigRetention Retention { get; set; } = StreamConfigRetention.Workqueue;
+    /// <summary>Gets or sets the retention policy for the stream. Default is Interest.</summary>
+    public StreamConfigRetention Retention { get; set; } = StreamConfigRetention.Interest;
 
     /// <summary>Gets or sets the subject prefix for all messages. Default is "rebus".</summary>
     public string SubjectPrefix { get; set; } = "rebus";
